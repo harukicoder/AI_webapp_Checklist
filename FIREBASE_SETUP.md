@@ -102,4 +102,6 @@ Commit and push the updated `firebase-config.js`.
 4. Use the same Google account on phone and laptop for personal sync.
 5. To share with friends, tap Share workspace and send them the invite link.
 
+By default each Google account uses its own personal cloud workspace. Friends who sign in normally will not see your routines. They only see your routines if they open an invite link from Share workspace and join that shared workspace.
+
 Your Firebase web config is not a password, but only your Firestore rules keep the data private. Do not skip the rules.

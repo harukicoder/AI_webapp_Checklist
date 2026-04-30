@@ -2,6 +2,7 @@
 
 const STORAGE_KEY = "checklist-studio:v1";
 const CLOUD_WORKSPACE_KEY = "checklist-studio:cloud-workspace";
+const ANONYMOUS_BACKUP_KEY = "checklist-studio:anonymous-backup:v1";
 const FIREBASE_VERSION = "12.7.0";
 const VIEW_TITLES = {
   today: "Today",
@@ -108,7 +109,7 @@ const cloud = {
   ready: false,
   user: null,
   workspaceId: localStorage.getItem(CLOUD_WORKSPACE_KEY) || "",
-  workspaceName: "Personal routines",
+  workspaceName: "Personal cloud",
   status: "Local only",
   applyingRemote: false,
   unsubscribe: null,
@@ -141,7 +142,7 @@ function createId() {
   return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function loadState() {
+function loadState(key = STORAGE_KEY) {
   const fallback = {
     activeView: "today",
     activeId: null,
@@ -153,7 +154,7 @@ function loadState() {
   };
 
   try {
-    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY));
+    const stored = JSON.parse(localStorage.getItem(key));
     if (!stored || typeof stored !== "object") {
       return fallback;
     }
@@ -172,6 +173,36 @@ function loadState() {
   } catch (error) {
     return fallback;
   }
+}
+
+function currentStorageKey() {
+  if (cloud.user && cloud.workspaceId) {
+    return workspaceStorageKey(cloud.workspaceId);
+  }
+
+  return STORAGE_KEY;
+}
+
+function workspaceStorageKey(workspaceId) {
+  return `checklist-studio:workspace:${workspaceId}`;
+}
+
+function archiveAnonymousLocalState() {
+  const stored = localStorage.getItem(STORAGE_KEY);
+  if (!stored) {
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(stored);
+    if (Array.isArray(parsed.checklists) && parsed.checklists.length) {
+      localStorage.setItem(ANONYMOUS_BACKUP_KEY, stored);
+    }
+  } catch (error) {
+    localStorage.setItem(ANONYMOUS_BACKUP_KEY, stored);
+  }
+
+  localStorage.removeItem(STORAGE_KEY);
 }
 
 function normalizeChecklist(checklist) {
@@ -211,7 +242,7 @@ function normalizeChecklist(checklist) {
 }
 
 function persist() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  localStorage.setItem(currentStorageKey(), JSON.stringify(state));
   if (!cloud.applyingRemote) {
     queueCloudSave();
   }
@@ -492,10 +523,14 @@ function renderWelcomeDashboard() {
     : "there";
   const title = cloud.user ? `Welcome back, ${firstName}` : "A calmer place for your routines";
   const body = cloud.user
-    ? `${cloud.workspaceName} is ready across your signed-in devices.`
+    ? `${cloud.workspaceName} is private to your Google account unless you share a workspace.`
     : "Sign in with Google to sync across your phone and laptop, then share a workspace with friends.";
   const cloudClass = cloud.ready ? "cloud-status is-live" : "cloud-status";
-  const cloudLabel = cloud.ready ? "Cloud sync on" : cloud.configured ? "Cloud ready" : "Cloud setup needed";
+  const cloudLabel = cloud.ready
+    ? cloud.workspaceName
+    : cloud.configured
+      ? "Local mode"
+      : "Cloud setup needed";
 
   elements.welcomeDashboard.innerHTML = `
     <section class="welcome-dashboard" aria-label="Welcome dashboard">
@@ -642,14 +677,16 @@ function renderSettings() {
   elements.hideCompletedToggle.checked = Boolean(state.settings.hideCompleted);
   elements.hideDoneLabel.textContent = state.settings.hideCompleted ? "Hidden" : "Visible";
   elements.cloudAccountLabel.textContent = cloud.user
-    ? `${cloud.user.displayName || cloud.user.email || "Signed in"}`
+    ? `${cloud.user.displayName || cloud.user.email || "Signed in"} · private cloud`
     : cloud.configured
       ? "Ready for Google sign-in"
       : "Add Firebase config to enable";
   elements.cloudAuthButton.textContent = cloud.user ? "Sign out" : "Sign in";
   elements.workspaceLabel.textContent = cloud.ready
     ? `${cloud.workspaceName} · ${cloud.status}`
-    : cloud.status;
+    : cloud.user
+      ? "Starting personal cloud"
+      : "Local browser only";
   elements.shareWorkspaceButton.disabled = !cloud.ready;
   elements.joinWorkspaceButton.disabled = !cloud.user || !cloud.configured;
 
@@ -1058,6 +1095,9 @@ async function initCloud() {
 
       if (!user) {
         stopCloudSync();
+        cloud.workspaceId = "";
+        cloud.workspaceName = "Personal cloud";
+        state = loadState(STORAGE_KEY);
         cloud.status = "Signed out";
         render();
         return;
@@ -1069,7 +1109,7 @@ async function initCloud() {
           cloud.pendingJoinId = "";
           clearSyncHash();
         } else {
-          await activateWorkspace(cloud.workspaceId || personalWorkspaceId(user));
+          await activateWorkspace(defaultWorkspaceIdForUser(user));
         }
       } catch (error) {
         cloud.status = "Cloud sync needs attention";
@@ -1151,6 +1191,15 @@ function personalWorkspaceId(user) {
   return `personal_${user.uid}`;
 }
 
+function defaultWorkspaceIdForUser(user) {
+  const storedWorkspaceId = localStorage.getItem(CLOUD_WORKSPACE_KEY) || "";
+  if (storedWorkspaceId && !storedWorkspaceId.startsWith("personal_")) {
+    return storedWorkspaceId;
+  }
+
+  return personalWorkspaceId(user);
+}
+
 function workspaceRef(workspaceId) {
   return cloud.modules.doc(cloud.db, "workspaces", workspaceId);
 }
@@ -1161,20 +1210,23 @@ async function activateWorkspace(workspaceId) {
   }
 
   stopCloudSync();
+  cloud.workspaceId = workspaceId;
+  cloud.workspaceName = workspaceId.startsWith("personal_") ? "Personal cloud" : "Shared workspace";
+  localStorage.setItem(CLOUD_WORKSPACE_KEY, workspaceId);
+
   const ref = workspaceRef(workspaceId);
   const snap = await cloud.modules.getDoc(ref);
 
   if (!snap.exists()) {
     await cloud.modules.setDoc(ref, buildCloudDocument({ workspaceId }), { merge: true });
+    localStorage.setItem(workspaceStorageKey(workspaceId), JSON.stringify(state));
   } else {
-    applyCloudDocument(snap.data(), true);
+    applyCloudDocument(snap.data(), false);
   }
 
-  cloud.workspaceId = workspaceId;
-  cloud.workspaceName = workspaceId.startsWith("personal_") ? "Personal routines" : "Shared routines";
+  archiveAnonymousLocalState();
   cloud.ready = true;
   cloud.status = "Live";
-  localStorage.setItem(CLOUD_WORKSPACE_KEY, workspaceId);
 
   cloud.unsubscribe = cloud.modules.onSnapshot(
     ref,
@@ -1194,6 +1246,10 @@ async function activateWorkspace(workspaceId) {
 }
 
 function applyCloudDocument(data, shouldMergeLocal) {
+  if (data.workspaceName) {
+    cloud.workspaceName = String(data.workspaceName);
+  }
+
   const incomingState = normalizeImportedState({
     activeId: data.activeId || null,
     settings: data.settings || {},
@@ -1241,7 +1297,7 @@ function buildCloudDocument(overrides = {}) {
     app: "Checklists",
     version: 1,
     ownerUid: overrides.ownerUid || uid,
-    workspaceName: overrides.workspaceName || cloud.workspaceName || "Personal routines",
+    workspaceName: overrides.workspaceName || cloud.workspaceName || "Personal cloud",
     joinOpen: Boolean(overrides.joinOpen),
     members: {
       [uid]: true
@@ -1306,7 +1362,7 @@ function openCloudDialog() {
     <div class="dialog-form">
       <p class="sync-note">${escapeHtml(
         signedIn
-          ? `${cloud.user.displayName || cloud.user.email} is connected. Your routines sync with ${cloud.workspaceName}.`
+          ? `${cloud.user.displayName || cloud.user.email} is connected. Personal cloud data is private to this Google account. Shared workspaces are separate.`
           : "Sign in with Google to sync routines across devices and invite friends into a shared workspace."
       )}</p>
       <div class="action-row">
