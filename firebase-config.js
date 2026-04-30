@@ -1,5 +1,5 @@
 window.CHECKLIST_FIREBASE_CONFIG = {
-  enabled: false,
+  enabled: true,
   firebase: {
     apiKey: "AIzaSyC_Fk31U_ObqhE9Ze3v2ed2B_MNyj2wZoY",
     authDomain: "webapp-checklist.firebaseapp.com",
