@@ -1,11 +1,12 @@
 "use strict";
 
-const CACHE_NAME = "checklists-v4";
+const CACHE_NAME = "checklists-v5";
 const APP_SHELL = [
   "./",
   "index.html",
   "styles.css",
   "app.js",
+  "firebase-config.js",
   "manifest.webmanifest",
   "icons/icon.svg",
   "icons/icon-192.png",

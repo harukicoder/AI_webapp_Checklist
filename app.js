@@ -1,6 +1,8 @@
 "use strict";
 
 const STORAGE_KEY = "checklist-studio:v1";
+const CLOUD_WORKSPACE_KEY = "checklist-studio:cloud-workspace";
+const FIREBASE_VERSION = "12.7.0";
 const VIEW_TITLES = {
   today: "Today",
   build: "Build",
@@ -59,9 +61,10 @@ const starterTemplates = [
 const elements = {
   screenTitle: document.querySelector("#screenTitle"),
   installButton: document.querySelector("#installButton"),
-  topSyncButton: document.querySelector("#topSyncButton"),
+  topCloudButton: document.querySelector("#topCloudButton"),
   tabs: document.querySelectorAll(".tab"),
   views: document.querySelectorAll(".view"),
+  welcomeDashboard: document.querySelector("#welcomeDashboard"),
   todaySearch: document.querySelector("#todaySearch"),
   librarySearch: document.querySelector("#librarySearch"),
   newFromToday: document.querySelector("#newFromToday"),
@@ -81,6 +84,11 @@ const elements = {
   themeLabel: document.querySelector("#themeLabel"),
   hideCompletedToggle: document.querySelector("#hideCompletedToggle"),
   hideDoneLabel: document.querySelector("#hideDoneLabel"),
+  cloudAccountLabel: document.querySelector("#cloudAccountLabel"),
+  cloudAuthButton: document.querySelector("#cloudAuthButton"),
+  workspaceLabel: document.querySelector("#workspaceLabel"),
+  joinWorkspaceButton: document.querySelector("#joinWorkspaceButton"),
+  shareWorkspaceButton: document.querySelector("#shareWorkspaceButton"),
   syncLabel: document.querySelector("#syncLabel"),
   syncButton: document.querySelector("#syncButton"),
   storageLabel: document.querySelector("#storageLabel"),
@@ -94,8 +102,24 @@ const elements = {
 
 let deferredInstallPrompt = null;
 let state = loadState();
+let cloudSaveTimer = null;
+const cloud = {
+  configured: false,
+  ready: false,
+  user: null,
+  workspaceId: localStorage.getItem(CLOUD_WORKSPACE_KEY) || "",
+  workspaceName: "Personal routines",
+  status: "Local only",
+  applyingRemote: false,
+  unsubscribe: null,
+  modules: null,
+  app: null,
+  auth: null,
+  db: null,
+  pendingJoinId: ""
+};
 const initialHash = window.location.hash.replace("#", "");
-const initialView = initialHash.startsWith("sync=") ? "" : initialHash;
+const initialView = initialHash.startsWith("sync=") || initialHash.startsWith("join=") ? "" : initialHash;
 if (VIEW_TITLES[initialView]) {
   state.activeView = initialView;
 }
@@ -105,6 +129,8 @@ bindEvents();
 applyTheme();
 render();
 handleIncomingSyncLink();
+handleIncomingWorkspaceLink();
+initCloud();
 registerServiceWorker();
 
 function createId() {
@@ -186,6 +212,9 @@ function normalizeChecklist(checklist) {
 
 function persist() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  if (!cloud.applyingRemote) {
+    queueCloudSave();
+  }
 }
 
 function saveAndRender(message) {
@@ -230,7 +259,10 @@ function bindEvents() {
     saveAndRender(state.settings.hideCompleted ? "Completed items hidden" : "Completed items visible");
   });
 
-  elements.topSyncButton.addEventListener("click", openSyncDialog);
+  elements.topCloudButton.addEventListener("click", openCloudDialog);
+  elements.cloudAuthButton.addEventListener("click", handleCloudAuthClick);
+  elements.shareWorkspaceButton.addEventListener("click", shareCloudWorkspace);
+  elements.joinWorkspaceButton.addEventListener("click", openJoinWorkspaceDialog);
   elements.syncButton.addEventListener("click", openSyncDialog);
   elements.exportButton.addEventListener("click", exportData);
   elements.importInput.addEventListener("change", importData);
@@ -392,6 +424,11 @@ function handleDocumentClick(event) {
 
   if (action === "switch-view") {
     setView(actionButton.dataset.view);
+    return;
+  }
+
+  if (action === "open-cloud") {
+    openCloudDialog();
   }
 }
 
@@ -431,6 +468,7 @@ function setView(view, shouldRender = true) {
 function render() {
   ensureActiveChecklist();
   setView(state.activeView || "today", false);
+  renderWelcomeDashboard();
   renderStats();
   renderActiveChecklist();
   renderChecklistList();
@@ -446,6 +484,32 @@ function ensureActiveChecklist() {
 
   const firstOpen = getOpenChecklists()[0];
   state.activeId = firstOpen ? firstOpen.id : null;
+}
+
+function renderWelcomeDashboard() {
+  const firstName = cloud.user && cloud.user.displayName
+    ? cloud.user.displayName.split(" ")[0]
+    : "there";
+  const title = cloud.user ? `Welcome back, ${firstName}` : "A calmer place for your routines";
+  const body = cloud.user
+    ? `${cloud.workspaceName} is ready across your signed-in devices.`
+    : "Sign in with Google to sync across your phone and laptop, then share a workspace with friends.";
+  const cloudClass = cloud.ready ? "cloud-status is-live" : "cloud-status";
+  const cloudLabel = cloud.ready ? "Cloud sync on" : cloud.configured ? "Cloud ready" : "Cloud setup needed";
+
+  elements.welcomeDashboard.innerHTML = `
+    <section class="welcome-dashboard" aria-label="Welcome dashboard">
+      <div class="welcome-copy">
+        <span class="${cloudClass}">${escapeHtml(cloudLabel)}</span>
+        <h2>${escapeHtml(title)}</h2>
+        <p>${escapeHtml(body)}</p>
+      </div>
+      <div class="welcome-actions">
+        <button class="button primary" type="button" data-action="switch-view" data-view="build">New routine</button>
+        <button class="button" type="button" data-action="open-cloud">Cloud</button>
+      </div>
+    </section>
+  `;
 }
 
 function renderStats() {
@@ -577,6 +641,17 @@ function renderSettings() {
   elements.themeLabel.textContent = labelForTheme(state.settings.theme);
   elements.hideCompletedToggle.checked = Boolean(state.settings.hideCompleted);
   elements.hideDoneLabel.textContent = state.settings.hideCompleted ? "Hidden" : "Visible";
+  elements.cloudAccountLabel.textContent = cloud.user
+    ? `${cloud.user.displayName || cloud.user.email || "Signed in"}`
+    : cloud.configured
+      ? "Ready for Google sign-in"
+      : "Add Firebase config to enable";
+  elements.cloudAuthButton.textContent = cloud.user ? "Sign out" : "Sign in";
+  elements.workspaceLabel.textContent = cloud.ready
+    ? `${cloud.workspaceName} · ${cloud.status}`
+    : cloud.status;
+  elements.shareWorkspaceButton.disabled = !cloud.ready;
+  elements.joinWorkspaceButton.disabled = !cloud.user || !cloud.configured;
 
   const count = state.checklists.length;
   const itemCount = state.checklists.reduce((total, checklist) => total + checklist.items.length, 0);
@@ -952,6 +1027,479 @@ function closeDialog() {
   } else {
     elements.dialog.removeAttribute("open");
   }
+}
+
+async function initCloud() {
+  const firebaseConfig = getFirebaseConfig();
+  cloud.configured = Boolean(firebaseConfig);
+
+  if (!cloud.configured) {
+    cloud.status = "Cloud setup needed";
+    render();
+    return;
+  }
+
+  try {
+    const [appModule, authModule, firestoreModule] = await Promise.all([
+      import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-app.js`),
+      import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-auth.js`),
+      import(`https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}/firebase-firestore.js`)
+    ]);
+
+    cloud.modules = { ...appModule, ...authModule, ...firestoreModule };
+    cloud.app = cloud.modules.initializeApp(firebaseConfig);
+    cloud.auth = cloud.modules.getAuth(cloud.app);
+    cloud.db = cloud.modules.getFirestore(cloud.app);
+    cloud.status = "Ready for Google sign-in";
+
+    cloud.modules.getRedirectResult(cloud.auth).catch(() => {});
+    cloud.modules.onAuthStateChanged(cloud.auth, async (user) => {
+      cloud.user = user;
+
+      if (!user) {
+        stopCloudSync();
+        cloud.status = "Signed out";
+        render();
+        return;
+      }
+
+      try {
+        if (cloud.pendingJoinId) {
+          await joinWorkspaceById(cloud.pendingJoinId);
+          cloud.pendingJoinId = "";
+          clearSyncHash();
+        } else {
+          await activateWorkspace(cloud.workspaceId || personalWorkspaceId(user));
+        }
+      } catch (error) {
+        cloud.status = "Cloud sync needs attention";
+        showToast("Cloud sync could not start");
+      }
+
+      render();
+    });
+  } catch (error) {
+    cloud.configured = false;
+    cloud.status = "Cloud unavailable";
+    render();
+  }
+}
+
+function getFirebaseConfig() {
+  const config = window.CHECKLIST_FIREBASE_CONFIG;
+  if (!config || !config.enabled || !config.firebase) {
+    return null;
+  }
+
+  if (!config.firebase.apiKey || config.firebase.apiKey.includes("PASTE_")) {
+    return null;
+  }
+
+  return config.firebase;
+}
+
+async function handleCloudAuthClick() {
+  if (!cloud.configured) {
+    openCloudSetupDialog();
+    return;
+  }
+
+  if (cloud.user) {
+    await cloud.modules.signOut(cloud.auth);
+    showToast("Signed out");
+    return;
+  }
+
+  await signInToCloud();
+}
+
+async function signInToCloud() {
+  if (!cloud.configured) {
+    openCloudSetupDialog();
+    return;
+  }
+
+  const provider = new cloud.modules.GoogleAuthProvider();
+  provider.addScope("profile");
+  provider.addScope("email");
+
+  try {
+    await cloud.modules.signInWithPopup(cloud.auth, provider);
+  } catch (error) {
+    if (
+      error.code === "auth/popup-blocked" ||
+      error.code === "auth/popup-closed-by-user" ||
+      error.code === "auth/operation-not-supported-in-this-environment"
+    ) {
+      await cloud.modules.signInWithRedirect(cloud.auth, provider);
+      return;
+    }
+
+    showToast("Google sign-in failed");
+  }
+}
+
+function stopCloudSync() {
+  if (cloud.unsubscribe) {
+    cloud.unsubscribe();
+    cloud.unsubscribe = null;
+  }
+  cloud.ready = false;
+}
+
+function personalWorkspaceId(user) {
+  return `personal_${user.uid}`;
+}
+
+function workspaceRef(workspaceId) {
+  return cloud.modules.doc(cloud.db, "workspaces", workspaceId);
+}
+
+async function activateWorkspace(workspaceId) {
+  if (!cloud.user || !cloud.db) {
+    return;
+  }
+
+  stopCloudSync();
+  const ref = workspaceRef(workspaceId);
+  const snap = await cloud.modules.getDoc(ref);
+
+  if (!snap.exists()) {
+    await cloud.modules.setDoc(ref, buildCloudDocument({ workspaceId }), { merge: true });
+  } else {
+    applyCloudDocument(snap.data(), true);
+  }
+
+  cloud.workspaceId = workspaceId;
+  cloud.workspaceName = workspaceId.startsWith("personal_") ? "Personal routines" : "Shared routines";
+  cloud.ready = true;
+  cloud.status = "Live";
+  localStorage.setItem(CLOUD_WORKSPACE_KEY, workspaceId);
+
+  cloud.unsubscribe = cloud.modules.onSnapshot(
+    ref,
+    (snapshot) => {
+      if (!snapshot.exists() || snapshot.metadata.hasPendingWrites) {
+        return;
+      }
+      applyCloudDocument(snapshot.data(), false);
+    },
+    () => {
+      cloud.status = "Cloud listener paused";
+      render();
+    }
+  );
+
+  queueCloudSave();
+}
+
+function applyCloudDocument(data, shouldMergeLocal) {
+  const incomingState = normalizeImportedState({
+    activeId: data.activeId || null,
+    settings: data.settings || {},
+    checklists: Array.isArray(data.checklists) ? data.checklists : []
+  });
+  const nextState = shouldMergeLocal ? mergeImportedWithCurrent(incomingState) : incomingState;
+
+  cloud.applyingRemote = true;
+  state = {
+    ...state,
+    activeId: nextState.activeId || state.activeId,
+    settings: {
+      ...state.settings,
+      ...nextState.settings
+    },
+    checklists: nextState.checklists
+  };
+  persist();
+  cloud.applyingRemote = false;
+  render();
+}
+
+function mergeImportedWithCurrent(importedState) {
+  const byId = new Map(importedState.checklists.map((checklist) => [checklist.id, checklist]));
+  state.checklists.forEach((checklist) => {
+    const existing = byId.get(checklist.id);
+    if (!existing || checklist.updatedAt > existing.updatedAt) {
+      byId.set(checklist.id, checklist);
+    }
+  });
+
+  return {
+    activeId: state.activeId || importedState.activeId,
+    settings: {
+      ...importedState.settings,
+      ...state.settings
+    },
+    checklists: [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  };
+}
+
+function buildCloudDocument(overrides = {}) {
+  const uid = cloud.user.uid;
+  return {
+    app: "Checklists",
+    version: 1,
+    ownerUid: overrides.ownerUid || uid,
+    workspaceName: overrides.workspaceName || cloud.workspaceName || "Personal routines",
+    joinOpen: Boolean(overrides.joinOpen),
+    members: {
+      [uid]: true
+    },
+    memberProfiles: {
+      [uid]: {
+        name: cloud.user.displayName || "",
+        email: cloud.user.email || ""
+      }
+    },
+    activeId: state.activeId || null,
+    settings: state.settings,
+    checklists: state.checklists,
+    updatedAt: Date.now(),
+    updatedBy: uid
+  };
+}
+
+function queueCloudSave() {
+  if (!cloud.ready || !cloud.user || !cloud.workspaceId || cloud.applyingRemote) {
+    return;
+  }
+
+  window.clearTimeout(cloudSaveTimer);
+  cloudSaveTimer = window.setTimeout(saveToCloud, 850);
+}
+
+async function saveToCloud() {
+  if (!cloud.ready || !cloud.user || !cloud.workspaceId || cloud.applyingRemote) {
+    return;
+  }
+
+  try {
+    await cloud.modules.setDoc(
+      workspaceRef(cloud.workspaceId),
+      {
+        activeId: state.activeId || null,
+        settings: state.settings,
+        checklists: state.checklists,
+        updatedAt: Date.now(),
+        updatedBy: cloud.user.uid
+      },
+      { merge: true }
+    );
+    cloud.status = "Synced";
+    renderSettings();
+  } catch (error) {
+    cloud.status = "Sync failed";
+    renderSettings();
+  }
+}
+
+function openCloudDialog() {
+  if (!cloud.configured) {
+    openCloudSetupDialog();
+    return;
+  }
+
+  const signedIn = Boolean(cloud.user);
+  elements.dialogTitle.textContent = "Google cloud";
+  elements.dialogBody.innerHTML = `
+    <div class="dialog-form">
+      <p class="sync-note">${escapeHtml(
+        signedIn
+          ? `${cloud.user.displayName || cloud.user.email} is connected. Your routines sync with ${cloud.workspaceName}.`
+          : "Sign in with Google to sync routines across devices and invite friends into a shared workspace."
+      )}</p>
+      <div class="action-row">
+        <button class="button ghost" type="button" id="cloudSecondaryButton">${signedIn ? "Sign out" : "Close"}</button>
+        <button class="button primary" type="button" id="cloudPrimaryButton">${signedIn ? "Share workspace" : "Sign in with Google"}</button>
+      </div>
+      <button class="button" type="button" id="joinCloudWorkspaceButton">Join workspace code</button>
+    </div>
+  `;
+
+  openDialog();
+  elements.dialogBody.querySelector("#cloudSecondaryButton").addEventListener("click", async () => {
+    if (signedIn) {
+      await cloud.modules.signOut(cloud.auth);
+      closeDialog();
+      return;
+    }
+    closeDialog();
+  });
+  elements.dialogBody.querySelector("#cloudPrimaryButton").addEventListener("click", async () => {
+    if (signedIn) {
+      await shareCloudWorkspace();
+      return;
+    }
+    await signInToCloud();
+  });
+  elements.dialogBody.querySelector("#joinCloudWorkspaceButton").addEventListener("click", openJoinWorkspaceDialog);
+}
+
+function openCloudSetupDialog() {
+  elements.dialogTitle.textContent = "Set up Google cloud";
+  elements.dialogBody.innerHTML = `
+    <div class="dialog-form">
+      <p class="sync-note">Firebase is not configured yet. Add your Firebase web config to firebase-config.js, enable Google sign-in, then publish the files again.</p>
+      <div class="action-row">
+        <button class="button ghost" type="button" data-close-dialog>Close</button>
+        <button class="button primary" type="button" data-close-dialog>Got it</button>
+      </div>
+    </div>
+  `;
+  openDialog();
+  elements.dialogBody.querySelectorAll("[data-close-dialog]").forEach((button) => {
+    button.addEventListener("click", closeDialog);
+  });
+}
+
+async function shareCloudWorkspace() {
+  if (!cloud.configured) {
+    openCloudSetupDialog();
+    return;
+  }
+
+  if (!cloud.user) {
+    await signInToCloud();
+    return;
+  }
+
+  if (!cloud.workspaceId) {
+    await activateWorkspace(personalWorkspaceId(cloud.user));
+  }
+
+  const ref = workspaceRef(cloud.workspaceId);
+  await cloud.modules.setDoc(ref, { joinOpen: true, updatedAt: Date.now() }, { merge: true });
+  const url = new URL(window.location.href);
+  url.hash = `join=${encodeURIComponent(cloud.workspaceId)}`;
+  const link = url.href;
+
+  elements.dialogTitle.textContent = "Share workspace";
+  elements.dialogBody.innerHTML = `
+    <div class="dialog-form">
+      <p class="sync-note">Send this link to a friend. After they sign in with Google, their device joins this shared workspace.</p>
+      <div class="field">
+        <label for="workspaceShareLink">Invite link</label>
+        <textarea id="workspaceShareLink" rows="4" readonly>${escapeHtml(link)}</textarea>
+      </div>
+      <div class="action-row">
+        <button class="button ghost" type="button" id="copyWorkspaceLinkButton">Copy</button>
+        <button class="button primary" type="button" id="shareWorkspaceLinkButton">Share</button>
+      </div>
+    </div>
+  `;
+
+  openDialog();
+  elements.dialogBody.querySelector("#copyWorkspaceLinkButton").addEventListener("click", async () => {
+    await copyText(link);
+    showToast("Invite link copied");
+  });
+  elements.dialogBody.querySelector("#shareWorkspaceLinkButton").addEventListener("click", async () => {
+    if (!navigator.share) {
+      await copyText(link);
+      showToast("Invite link copied");
+      return;
+    }
+
+    await navigator.share({
+      title: "Join my checklist workspace",
+      text: "Open this link to join my checklist workspace.",
+      url: link
+    });
+  });
+}
+
+function openJoinWorkspaceDialog() {
+  if (!cloud.configured) {
+    openCloudSetupDialog();
+    return;
+  }
+
+  elements.dialogTitle.textContent = "Join workspace";
+  elements.dialogBody.innerHTML = `
+    <div class="dialog-form">
+      <p class="sync-note">Paste a workspace invite link or code. You will need to sign in with Google before joining.</p>
+      <div class="field">
+        <label for="workspaceJoinInput">Invite link or code</label>
+        <textarea id="workspaceJoinInput" rows="4" placeholder="https://...#join=..."></textarea>
+      </div>
+      <div class="action-row">
+        <button class="button ghost" type="button" data-close-dialog>Cancel</button>
+        <button class="button primary" type="button" id="joinWorkspaceConfirmButton">Join</button>
+      </div>
+    </div>
+  `;
+
+  openDialog();
+  elements.dialogBody.querySelector("[data-close-dialog]").addEventListener("click", closeDialog);
+  elements.dialogBody.querySelector("#joinWorkspaceConfirmButton").addEventListener("click", async () => {
+    try {
+      const workspaceId = extractWorkspaceId(elements.dialogBody.querySelector("#workspaceJoinInput").value);
+      if (!cloud.user) {
+        cloud.pendingJoinId = workspaceId;
+        await signInToCloud();
+        closeDialog();
+        return;
+      }
+      await joinWorkspaceById(workspaceId);
+      closeDialog();
+      showToast("Workspace joined");
+    } catch (error) {
+      showToast("Could not join workspace");
+    }
+  });
+}
+
+function handleIncomingWorkspaceLink() {
+  const hash = window.location.hash.replace("#", "");
+  if (!hash.startsWith("join=")) {
+    return;
+  }
+
+  cloud.pendingJoinId = decodeURIComponent(hash.slice(5));
+  if (cloud.configured && cloud.user) {
+    joinWorkspaceById(cloud.pendingJoinId).catch(() => showToast("Could not join workspace"));
+    return;
+  }
+}
+
+async function joinWorkspaceById(workspaceId) {
+  if (!cloud.user) {
+    cloud.pendingJoinId = workspaceId;
+    await signInToCloud();
+    return;
+  }
+
+  const ref = workspaceRef(workspaceId);
+  await cloud.modules.updateDoc(ref, {
+    [`members.${cloud.user.uid}`]: true,
+    [`memberProfiles.${cloud.user.uid}`]: {
+      name: cloud.user.displayName || "",
+      email: cloud.user.email || ""
+    },
+    updatedAt: Date.now()
+  });
+  await activateWorkspace(workspaceId);
+  clearSyncHash();
+}
+
+function extractWorkspaceId(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) {
+    throw new Error("Missing workspace code");
+  }
+
+  try {
+    const url = new URL(trimmed);
+    const hash = url.hash.replace("#", "");
+    if (hash.startsWith("join=")) {
+      return decodeURIComponent(hash.slice(5));
+    }
+  } catch (error) {
+    // Continue with raw code parsing.
+  }
+
+  return trimmed.replace(/^join=/, "");
 }
 
 function openSyncDialog() {

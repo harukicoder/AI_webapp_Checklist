@@ -78,6 +78,15 @@
         <path d="m8.6 10.6 6.8-4.2"></path>
         <path d="m8.6 13.4 6.8 4.2"></path>
       </symbol>
+      <symbol id="icon-cloud" viewBox="0 0 24 24">
+        <path d="M17.5 19H8a6 6 0 1 1 1.1-11.9A7 7 0 0 1 22 11.5 4 4 0 0 1 17.5 19Z"></path>
+      </symbol>
+      <symbol id="icon-users" viewBox="0 0 24 24">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+        <circle cx="9" cy="7" r="4"></circle>
+        <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+        <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+      </symbol>
       <symbol id="icon-search" viewBox="0 0 24 24">
         <path d="m21 21-4.35-4.35"></path>
         <circle cx="11" cy="11" r="7"></circle>
@@ -102,8 +111,8 @@
           <h1 id="screenTitle">Today</h1>
         </div>
         <div class="topbar-actions">
-          <button class="icon-button" id="topSyncButton" type="button" aria-label="Sync devices" title="Sync devices">
-            <svg><use href="#icon-share"></use></svg>
+          <button class="icon-button" id="topCloudButton" type="button" aria-label="Cloud sync" title="Cloud sync">
+            <svg><use href="#icon-cloud"></use></svg>
           </button>
           <button class="icon-button install-button is-hidden" id="installButton" type="button" aria-label="Install app" title="Install app">
             <svg><use href="#icon-download"></use></svg>
@@ -113,6 +122,8 @@
 
       <main class="content">
         <section class="view is-active" id="todayView" aria-labelledby="todayTab">
+          <div id="welcomeDashboard"></div>
+
           <div class="toolbar">
             <label class="search">
               <svg aria-hidden="true"><use href="#icon-search"></use></svg>
@@ -210,6 +221,29 @@
 
         <section class="view" id="settingsView" aria-labelledby="settingsTab">
           <div class="settings-list">
+            <div class="setting-row actions">
+              <div>
+                <h2>Google cloud</h2>
+                <p id="cloudAccountLabel">Local only</p>
+              </div>
+              <div class="setting-actions">
+                <button class="button compact" id="cloudAuthButton" type="button">Sign in</button>
+              </div>
+            </div>
+            <div class="setting-row actions">
+              <div>
+                <h2>Workspace</h2>
+                <p id="workspaceLabel">Personal routines</p>
+              </div>
+              <div class="icon-actions">
+                <button class="icon-button" id="joinWorkspaceButton" type="button" aria-label="Join workspace" title="Join workspace">
+                  <svg><use href="#icon-users"></use></svg>
+                </button>
+                <button class="icon-button" id="shareWorkspaceButton" type="button" aria-label="Share workspace" title="Share workspace">
+                  <svg><use href="#icon-share"></use></svg>
+                </button>
+              </div>
+            </div>
             <div class="setting-row">
               <div>
                 <h2>Color theme</h2>
@@ -294,6 +328,7 @@
     </dialog>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="firebase-config.js"></script>
     <script src="app.js" defer></script>
   </body>
 </html>
