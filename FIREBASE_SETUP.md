@@ -104,4 +104,6 @@ Commit and push the updated `firebase-config.js`.
 
 By default each Google account uses its own personal cloud workspace. Friends who sign in normally will not see your routines. They only see your routines if they open an invite link from Share workspace and join that shared workspace.
 
+Routine data is cloud-only. The app clears old local routine caches on load and does not write checklists to browser local storage. Firebase may still keep a local sign-in session so users do not need to log in every time.
+
 Your Firebase web config is not a password, but only your Firestore rules keep the data private. Do not skip the rules.

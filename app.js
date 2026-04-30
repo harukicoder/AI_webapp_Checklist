@@ -1,8 +1,5 @@
 "use strict";
 
-const STORAGE_KEY = "checklist-studio:v1";
-const CLOUD_WORKSPACE_KEY = "checklist-studio:cloud-workspace";
-const ANONYMOUS_BACKUP_KEY = "checklist-studio:anonymous-backup:v1";
 const FIREBASE_VERSION = "12.7.0";
 const VIEW_TITLES = {
   today: "Today",
@@ -102,13 +99,14 @@ const elements = {
 };
 
 let deferredInstallPrompt = null;
-let state = loadState();
+purgeLocalRoutineStorage();
+let state = createDefaultState();
 let cloudSaveTimer = null;
 const cloud = {
   configured: false,
   ready: false,
   user: null,
-  workspaceId: localStorage.getItem(CLOUD_WORKSPACE_KEY) || "",
+  workspaceId: "",
   workspaceName: "Personal cloud",
   status: "Local only",
   applyingRemote: false,
@@ -142,8 +140,8 @@ function createId() {
   return `id-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function loadState(key = STORAGE_KEY) {
-  const fallback = {
+function createDefaultState() {
+  return {
     activeView: "today",
     activeId: null,
     settings: {
@@ -152,57 +150,22 @@ function loadState(key = STORAGE_KEY) {
     },
     checklists: []
   };
+}
 
+function purgeLocalRoutineStorage() {
   try {
-    const stored = JSON.parse(localStorage.getItem(key));
-    if (!stored || typeof stored !== "object") {
-      return fallback;
+    const keys = [];
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key && key.startsWith("checklist-studio:")) {
+        keys.push(key);
+      }
     }
 
-    return {
-      ...fallback,
-      ...stored,
-      settings: {
-        ...fallback.settings,
-        ...(stored.settings || {})
-      },
-      checklists: Array.isArray(stored.checklists)
-        ? stored.checklists.map(normalizeChecklist).filter(Boolean)
-        : []
-    };
+    keys.forEach((key) => localStorage.removeItem(key));
   } catch (error) {
-    return fallback;
+    // Local storage may be unavailable in private browsing.
   }
-}
-
-function currentStorageKey() {
-  if (cloud.user && cloud.workspaceId) {
-    return workspaceStorageKey(cloud.workspaceId);
-  }
-
-  return STORAGE_KEY;
-}
-
-function workspaceStorageKey(workspaceId) {
-  return `checklist-studio:workspace:${workspaceId}`;
-}
-
-function archiveAnonymousLocalState() {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (!stored) {
-    return;
-  }
-
-  try {
-    const parsed = JSON.parse(stored);
-    if (Array.isArray(parsed.checklists) && parsed.checklists.length) {
-      localStorage.setItem(ANONYMOUS_BACKUP_KEY, stored);
-    }
-  } catch (error) {
-    localStorage.setItem(ANONYMOUS_BACKUP_KEY, stored);
-  }
-
-  localStorage.removeItem(STORAGE_KEY);
 }
 
 function normalizeChecklist(checklist) {
@@ -242,7 +205,6 @@ function normalizeChecklist(checklist) {
 }
 
 function persist() {
-  localStorage.setItem(currentStorageKey(), JSON.stringify(state));
   if (!cloud.applyingRemote) {
     queueCloudSave();
   }
@@ -254,6 +216,16 @@ function saveAndRender(message) {
   if (message) {
     showToast(message);
   }
+}
+
+function requireCloudReady() {
+  if (cloud.ready && cloud.user && cloud.workspaceId) {
+    return true;
+  }
+
+  showToast("Sign in to save routines in cloud");
+  openCloudDialog();
+  return false;
 }
 
 function bindEvents() {
@@ -327,6 +299,10 @@ function bindEvents() {
 
 function handleChecklistSubmit(event) {
   event.preventDefault();
+
+  if (!requireCloudReady()) {
+    return;
+  }
 
   const title = elements.title.value.trim();
   const items = parseItems(elements.items.value);
@@ -564,6 +540,18 @@ function renderStats() {
 function renderActiveChecklist() {
   const checklist = getChecklist(state.activeId);
   if (!checklist || checklist.mode === "template") {
+    if (!cloud.ready) {
+      elements.activeChecklist.innerHTML = `
+        <div class="empty-state">
+          <svg><use href="#icon-cloud"></use></svg>
+          <h2>Cloud sign-in required</h2>
+          <p>Routines are saved only in Google cloud. Sign in to load or create them.</p>
+          <button class="button primary" type="button" data-action="open-cloud">Cloud</button>
+        </div>
+      `;
+      return;
+    }
+
     elements.activeChecklist.innerHTML = emptyState(
       "No active checklist",
       "Create one or start from a saved template.",
@@ -800,6 +788,10 @@ function normalizeSearch(value) {
 }
 
 function startFromTemplate(id) {
+  if (!requireCloudReady()) {
+    return;
+  }
+
   const template = getChecklist(id);
   if (!template) {
     return;
@@ -823,6 +815,10 @@ function startFromTemplate(id) {
 }
 
 function duplicateChecklist(id) {
+  if (!requireCloudReady()) {
+    return;
+  }
+
   const source = getChecklist(id);
   if (!source) {
     return;
@@ -847,6 +843,10 @@ function duplicateChecklist(id) {
 }
 
 function deleteChecklist(id) {
+  if (!requireCloudReady()) {
+    return;
+  }
+
   const checklist = getChecklist(id);
   if (!checklist) {
     return;
@@ -864,6 +864,10 @@ function deleteChecklist(id) {
 }
 
 function toggleItem(checklistId, itemId) {
+  if (!requireCloudReady()) {
+    return;
+  }
+
   const checklist = getChecklist(checklistId);
   const item = checklist && checklist.items.find((entry) => entry.id === itemId);
   if (!item) {
@@ -876,6 +880,10 @@ function toggleItem(checklistId, itemId) {
 }
 
 function quickAddItem(checklistId) {
+  if (!requireCloudReady()) {
+    return;
+  }
+
   const checklist = getChecklist(checklistId);
   const input = document.getElementById(`quickAdd-${checklistId}`);
   const text = input ? input.value.trim() : "";
@@ -890,6 +898,10 @@ function quickAddItem(checklistId) {
 }
 
 function deleteItem(checklistId, itemId) {
+  if (!requireCloudReady()) {
+    return;
+  }
+
   const checklist = getChecklist(checklistId);
   if (!checklist) {
     return;
@@ -901,6 +913,10 @@ function deleteItem(checklistId, itemId) {
 }
 
 function resetChecklist(checklistId) {
+  if (!requireCloudReady()) {
+    return;
+  }
+
   const checklist = getChecklist(checklistId);
   if (!checklist) {
     return;
@@ -912,6 +928,10 @@ function resetChecklist(checklistId) {
 }
 
 function openChecklistEditor(id) {
+  if (!requireCloudReady()) {
+    return;
+  }
+
   const checklist = getChecklist(id);
   if (!checklist) {
     return;
@@ -1004,6 +1024,10 @@ function openChecklistEditor(id) {
 }
 
 function openItemEditor(checklistId, itemId) {
+  if (!requireCloudReady()) {
+    return;
+  }
+
   const checklist = getChecklist(checklistId);
   const item = checklist && checklist.items.find((entry) => entry.id === itemId);
   if (!item) {
@@ -1044,6 +1068,10 @@ function openItemEditor(checklistId, itemId) {
 }
 
 function openDialog() {
+  if (elements.dialog.open) {
+    return;
+  }
+
   if (typeof elements.dialog.showModal === "function") {
     elements.dialog.showModal();
   } else {
@@ -1097,7 +1125,7 @@ async function initCloud() {
         stopCloudSync();
         cloud.workspaceId = "";
         cloud.workspaceName = "Personal cloud";
-        state = loadState(STORAGE_KEY);
+        state = createDefaultState();
         cloud.status = "Signed out";
         render();
         return;
@@ -1192,11 +1220,6 @@ function personalWorkspaceId(user) {
 }
 
 function defaultWorkspaceIdForUser(user) {
-  const storedWorkspaceId = localStorage.getItem(CLOUD_WORKSPACE_KEY) || "";
-  if (storedWorkspaceId && !storedWorkspaceId.startsWith("personal_")) {
-    return storedWorkspaceId;
-  }
-
   return personalWorkspaceId(user);
 }
 
@@ -1212,19 +1235,16 @@ async function activateWorkspace(workspaceId) {
   stopCloudSync();
   cloud.workspaceId = workspaceId;
   cloud.workspaceName = workspaceId.startsWith("personal_") ? "Personal cloud" : "Shared workspace";
-  localStorage.setItem(CLOUD_WORKSPACE_KEY, workspaceId);
 
   const ref = workspaceRef(workspaceId);
   const snap = await cloud.modules.getDoc(ref);
 
   if (!snap.exists()) {
     await cloud.modules.setDoc(ref, buildCloudDocument({ workspaceId }), { merge: true });
-    localStorage.setItem(workspaceStorageKey(workspaceId), JSON.stringify(state));
   } else {
     applyCloudDocument(snap.data(), false);
   }
 
-  archiveAnonymousLocalState();
   cloud.ready = true;
   cloud.status = "Live";
 
@@ -1626,6 +1646,10 @@ function openSyncDialog() {
   }
 
   elements.dialogBody.querySelector("#importSyncLinkButton").addEventListener("click", () => {
+    if (!requireCloudReady()) {
+      return;
+    }
+
     const input = elements.dialogBody.querySelector("#incomingSyncLink");
     try {
       const importedState = readSyncStateFromText(input.value);
@@ -1682,6 +1706,10 @@ function handleIncomingSyncLink() {
     openDialog();
 
     elements.dialogBody.querySelector("#mergeSyncButton").addEventListener("click", () => {
+      if (!requireCloudReady()) {
+        return;
+      }
+
       mergeImportedState(importedState);
       clearSyncHash();
       closeDialog();
@@ -1689,6 +1717,10 @@ function handleIncomingSyncLink() {
     });
 
     elements.dialogBody.querySelector("#replaceSyncButton").addEventListener("click", () => {
+      if (!requireCloudReady()) {
+        return;
+      }
+
       if (!window.confirm("Replace all routines on this device with the routines from this link?")) {
         return;
       }
@@ -1827,6 +1859,11 @@ function exportData() {
 async function importData(event) {
   const file = event.target.files && event.target.files[0];
   if (!file) {
+    return;
+  }
+
+  if (!requireCloudReady()) {
+    event.target.value = "";
     return;
   }
 
