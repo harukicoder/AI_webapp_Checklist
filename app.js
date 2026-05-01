@@ -1096,6 +1096,12 @@ function closeDialog() {
   }
 }
 
+function closeCloudDialogIfOpen() {
+  if (elements.dialog.open && elements.dialogTitle.textContent === "Google cloud") {
+    closeDialog();
+  }
+}
+
 async function initCloud() {
   const firebaseConfig = getFirebaseConfig();
   cloud.configured = Boolean(firebaseConfig);
@@ -1141,6 +1147,7 @@ async function initCloud() {
         } else {
           await activateWorkspace(defaultWorkspaceIdForUser(user));
         }
+        closeCloudDialogIfOpen();
       } catch (error) {
         cloud.status = "Cloud sync needs attention";
         showToast("Cloud sync could not start");
@@ -1195,6 +1202,7 @@ async function signInToCloud() {
 
   try {
     await cloud.modules.signInWithPopup(cloud.auth, provider);
+    closeCloudDialogIfOpen();
   } catch (error) {
     if (
       error.code === "auth/popup-blocked" ||
