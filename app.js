@@ -223,7 +223,7 @@ function requireCloudReady() {
     return true;
   }
 
-  showToast("Sign in to save routines in cloud");
+  showToast(cloud.user ? "Cloud is still connecting" : "Sign in to save routines in cloud");
   openCloudDialog();
   return false;
 }
@@ -504,8 +504,10 @@ function renderWelcomeDashboard() {
   const cloudClass = cloud.ready ? "cloud-status is-live" : "cloud-status";
   const cloudLabel = cloud.ready
     ? cloud.workspaceName
-    : cloud.configured
-      ? "Local mode"
+    : cloud.user
+      ? "Connecting cloud"
+      : cloud.configured
+        ? "Sign in required"
       : "Cloud setup needed";
 
   elements.welcomeDashboard.innerHTML = `
@@ -1223,6 +1225,10 @@ function defaultWorkspaceIdForUser(user) {
   return personalWorkspaceId(user);
 }
 
+function isPersonalWorkspace(workspaceId) {
+  return Boolean(cloud.user) && workspaceId === personalWorkspaceId(cloud.user);
+}
+
 function workspaceRef(workspaceId) {
   return cloud.modules.doc(cloud.db, "workspaces", workspaceId);
 }
@@ -1237,9 +1243,17 @@ async function activateWorkspace(workspaceId) {
   cloud.workspaceName = workspaceId.startsWith("personal_") ? "Personal cloud" : "Shared workspace";
 
   const ref = workspaceRef(workspaceId);
-  const snap = await cloud.modules.getDoc(ref);
+  let snap = null;
 
-  if (!snap.exists()) {
+  try {
+    snap = await cloud.modules.getDoc(ref);
+  } catch (error) {
+    if (!isPersonalWorkspace(workspaceId)) {
+      throw error;
+    }
+  }
+
+  if (!snap || !snap.exists()) {
     await cloud.modules.setDoc(ref, buildCloudDocument({ workspaceId }), { merge: true });
   } else {
     applyCloudDocument(snap.data(), false);
@@ -1382,7 +1396,9 @@ function openCloudDialog() {
     <div class="dialog-form">
       <p class="sync-note">${escapeHtml(
         signedIn
-          ? `${cloud.user.displayName || cloud.user.email} is connected. Personal cloud data is private to this Google account. Shared workspaces are separate.`
+          ? cloud.ready
+            ? `${cloud.user.displayName || cloud.user.email} is connected. Personal cloud data is private to this Google account. Shared workspaces are separate.`
+            : `${cloud.user.displayName || cloud.user.email} is signed in, but the Firestore workspace is still connecting. If this does not change, check Firestore Rules are published.`
           : "Sign in with Google to sync routines across devices and invite friends into a shared workspace."
       )}</p>
       <div class="action-row">

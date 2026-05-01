@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_NAME = "checklists-v7";
+const CACHE_NAME = "checklists-v8";
 const APP_SHELL = [
   "./",
   "index.html",
