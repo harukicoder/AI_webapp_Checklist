@@ -131,6 +131,7 @@ handleIncomingSyncLink();
 handleIncomingWorkspaceLink();
 initCloud();
 registerServiceWorker();
+scheduleDailyReset();
 
 function createId() {
   if (window.crypto && typeof window.crypto.randomUUID === "function") {
@@ -1312,6 +1313,7 @@ function applyCloudDocument(data, shouldMergeLocal) {
   persist();
   cloud.applyingRemote = false;
   render();
+  runDailyResetIfNeeded();
 }
 
 function mergeImportedWithCurrent(importedState) {
@@ -1909,6 +1911,52 @@ async function importData(event) {
   } finally {
     event.target.value = "";
   }
+}
+
+function todayKey() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function runDailyResetIfNeeded() {
+  const today = todayKey();
+  if (state.settings.lastResetDate === today) {
+    return false;
+  }
+
+  let changed = false;
+  state.checklists.forEach((checklist) => {
+    if (checklist.mode === "template") {
+      return;
+    }
+    if (checklist.items.some((item) => item.done)) {
+      checklist.items = checklist.items.map((item) => ({ ...item, done: false }));
+      checklist.updatedAt = new Date().toISOString();
+      changed = true;
+    }
+  });
+
+  state.settings.lastResetDate = today;
+  if (changed) {
+    saveAndRender("Daily reset · checklists unticked");
+  } else {
+    persist();
+  }
+  return changed;
+}
+
+function scheduleDailyReset() {
+  runDailyResetIfNeeded();
+  const now = new Date();
+  const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+  const delay = Math.max(1000, nextMidnight.getTime() - now.getTime());
+  window.setTimeout(() => {
+    runDailyResetIfNeeded();
+    scheduleDailyReset();
+  }, delay);
 }
 
 function applyTheme() {
